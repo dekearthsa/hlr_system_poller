@@ -4,7 +4,7 @@ import time
 import sqlite3
 import threading
 import requests
-from datetime import datetime
+# from datetime import datetime
 
 PATH_DB = "/Users/pcsishun/project_envalic/hlr_control_system/hlr_backend/hlr_db.db"
 CTRL_URL = "http://localhost:1111"
