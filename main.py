@@ -1,14 +1,15 @@
 from queue import Queue
-from mock_sensor_poller import create_mock_poller
+# from mock_sensor_poller import create_mock_poller
+from sensor_poller import SensorPoller
 import time
 import sqlite3
 import threading
-# import requests
+import requests
 # from datetime import datetime
 
 PATH_DB = "/Users/pcsishun/project_envalic/hlr_control_system/hlr_backend/hlr_db.db"
-CTRL_URL = "http://localhost:1111"
-# SESSION = requests.Session()
+CTRL_URL = "http://172.29.247.180" # /emergency_shutdown GET  # 405 
+SESSION = requests.Session()
 # conn = sqlite3.connect(PATH_DB)
 # cursor = conn.cursor()
 
@@ -59,31 +60,67 @@ def update_state_cyclicloop(conn, loop_count:int):
     cur.execute(sql, (loop_count,))
     conn.commit()
 
+def handle_end_loop():
+    status = requests.get(CTRL_URL + '/stop')
+    print(f"{status.status_code} END..")
 
-## send function 
-def send_payload_control(state, heater, fanvolt, duration_ms):
+
+## send function auto
+def send_payload_control(conn,state, heater, fanvolt, duration_ms):
     print("start send payload...")
     payload = {
-        "phase": state, ## string "REGEN", "COOLDOWN", "IDLE", "SCRUB" 
-        "fan_volt": fanvolt, ## float
-        "heater": heater, ## bool 
-        "duration": duration_ms ## int
+        "phase": state,        # string: "REGEN", "COOLDOWN", "IDLE", "SCRUB"
+        "fan_volt": fanvolt,   # float
+        "heater": heater,      # bool
+        "duration": duration_ms # int (milliseconds)
     }
-    
-    try:
-        ## checking time 
-        print(f"debug send  => {payload}")
-        # SESSION.post(CTRL_URL, data=payload, timeout=3)
-    except Exception as e:
-        print(f"[control] error: {e}")
+
+    print(CTRL_URL + "/auto")
+    print(f"debug send => {payload}")
+
+    status = requests.post(
+        CTRL_URL + "/auto",
+        json=payload,      
+        timeout=3
+    )
+
+    print("status code:", status.status_code)
+    print("response:", status.text)
+    # status = SESSION.post(CTRL_URL+"/auto", data=payload, headers=headers, timeout=3). abcDEF99
+    print("status => ",status.status_code)
+    print("status => ",status)
+    if status.status_code == 405:
+            for i in range(4):
+                if i < 5:
+                    print(f"try to send command {i+1}/5")
+                    status = requests.post(
+                        CTRL_URL + "/auto",
+                        json=payload,      
+                        timeout=3
+                    )
+                    if status.status_code == 200:
+                        break
+                    else:
+                        time.sleep(1)
+                else:
+                    print("Force stop emergency shutdown")
+                    update_endtime_and_state(conn, 0,0, "end")
+                    update_state_active(conn)
+                    status = SESSION.get(CTRL_URL+"/emergency_shutdown",timeout=3)
+                    print(status)
+                    break
+                    
+
+    # except Exception as e:
+    #     print(f"[control] error: {e}")
 
 
 ### Checking loop thread
 def checking_state_loop(stop_event: threading.Event, sleep_sec: float = 1.0):
     print("Started thread")
     conn = open_conn()
-    try:
-        while not stop_event.is_set():
+    # try:
+    while not stop_event.is_set():
             # print("Thread running...")
             el = conn.execute("SELECT * FROM state_hlr").fetchone()
             # print("conn => ", el['is_start'])
@@ -102,7 +139,7 @@ def checking_state_loop(stop_event: threading.Event, sleep_sec: float = 1.0):
             # print("cyc_loop => ", cyc_loop, int(el['cyclic_loop_dur']))
             if cyc_loop <= 0:
                 print("in condition cyc_loop = 0", cyc_loop)
-                
+                handle_end_loop()
                 update_endtime_and_state(conn, 0,0, "end")
                 update_state_active(conn)
                 continue
@@ -139,7 +176,7 @@ def checking_state_loop(stop_event: threading.Event, sleep_sec: float = 1.0):
             # print("regen_fan_volt => ", regen_fan_volt)
             if system_state == "regen_firsttime":
                 print("in condition regen_firsttime")
-                send_payload_control("regen", True, regen_fan_volt, regen_duration)
+                send_payload_control(conn,"regen", True, regen_fan_volt, regen_duration)
                 # update_endtime_and_state(conn, row_id, now_ms + cool_duration, "COOLDOWN")
                 update_endtime_and_state(conn, 
                                         starttime,
@@ -151,7 +188,7 @@ def checking_state_loop(stop_event: threading.Event, sleep_sec: float = 1.0):
                 
                 if system_state == "regen":
                     print("in condition regen")
-                    send_payload_control("regen", True, regen_fan_volt, regen_duration)
+                    send_payload_control(conn,"regen", True, regen_fan_volt, regen_duration)
                     # update_endtime_and_state(conn, row_id, now_ms + cool_duration, "COOLDOWN")
                     update_endtime_and_state(conn, 
                                             starttime,
@@ -161,7 +198,7 @@ def checking_state_loop(stop_event: threading.Event, sleep_sec: float = 1.0):
 
                 if system_state == "cooldown":
                     print("in condition cooldown")
-                    send_payload_control("cooldown", False, cool_fan_volt, cool_duration)
+                    send_payload_control(conn,"cooldown", False, cool_fan_volt, cool_duration)
                     # update_endtime_and_state(conn, row_id, now_ms + idle_duration, "IDLE")
                     update_endtime_and_state(conn, 
                                              starttime, 
@@ -171,7 +208,7 @@ def checking_state_loop(stop_event: threading.Event, sleep_sec: float = 1.0):
 
                 elif system_state == "idle":
                     print("in condition idle")
-                    send_payload_control("idle", False, 0, idle_duration)
+                    send_payload_control(conn,"idle", False, 0, idle_duration)
                     # update_endtime_and_state(conn, row_id, now_ms + scab_duration, "SCRUB")
                     update_endtime_and_state(conn, 
                                              starttime, 
@@ -181,7 +218,7 @@ def checking_state_loop(stop_event: threading.Event, sleep_sec: float = 1.0):
 
                 elif system_state == "scrub":
                     print("in condition scrub")
-                    send_payload_control("scrub", False, scab_fan_volt, scab_duration)  
+                    send_payload_control(conn,"scrub", False, scab_fan_volt, scab_duration)  
                     update_state_cyclicloop(conn, cyc_loop-1)
                     update_endtime_and_state(conn, starttime,starttime + (scab_duration* 60 * 1000), "regen")
                     # if cyc_loop <= 0:
@@ -199,10 +236,10 @@ def checking_state_loop(stop_event: threading.Event, sleep_sec: float = 1.0):
 
 
             stop_event.wait(sleep_sec)
-    except Exception as e:
-        print(f"[checking_loop] fatal: {e}")
-    finally:
-        conn.close()
+    # except Exception as e:
+    #     print(f"[checking_loop] fatal: {e}")
+    # finally:
+    #     conn.close()
 
 def start_checking_thread():
     print("Starting thread....")
@@ -227,13 +264,13 @@ def save_to_db(now_ms, sensor_id, co2, temp, humid, mode):
 
 def main():
     set_queue = Queue()
-    poller = create_mock_poller(
+    poller = SensorPoller(
         ui_queue=set_queue,
         polling_interval=5
     )
     poller.start()
-    time.sleep(10)
-    poller.stop()
+    # time.sleep(10)
+    # poller.stop()
 
     while not set_queue.empty():
         data_sensor = set_queue.get()
@@ -246,7 +283,7 @@ def main():
         save_to_db(now_ms,data['sensor_id'], data['co2'], data['temperature'], data['humidity'], mode="test")
         # print("\n")
     
-    time.sleep(13)
+    time.sleep(5)
 
 
 if __name__ == "__main__":
